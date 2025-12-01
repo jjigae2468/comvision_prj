@@ -1,3 +1,5 @@
+import numpy as np  # [수정 1] numpy 모듈 추가
+
 VOC_CLASSES = ['aeroplane', 'bicycle', 'bird', 'boat',
                'bottle', 'bus', 'car', 'cat', 'chair',
                'cow', 'diningtable', 'dog', 'horse',
@@ -53,15 +55,18 @@ class Evaluation:
         print('CLASS'.ljust(25, ' '), 'AP')
         for class_name in VOC_CLASSES:
             class_preds = self.predictions[class_name]  # [[image_id,confidence,x1,y1,x2,y2],...]
+            
+            # [수정 2] 예측 없는 클래스 처리 로직 수정
             if len(class_preds) == 0:
-                ap = -1
+                ap = 0.0  # 점수는 0점
                 print('---class {} ap {}---'.format(class_name, ap))
                 aps.append(ap)
-                break
-            # print(pred)
+                continue  # [핵심 수정] break가 아니라 continue여야 함! (다음 클래스로 넘어가기)
+
             image_ids = [x[0] for x in class_preds]
             confidence = np.array([float(x[1]) for x in class_preds])
             BB = np.array([x[2:] for x in class_preds])
+            
             # sort by confidence
             sorted_ind = np.argsort(-confidence)
             sorted_scores = np.sort(-confidence)
@@ -125,6 +130,8 @@ if __name__ == '__main__':
     from collections import defaultdict
     from tqdm import tqdm
     import matplotlib.pyplot as plt
+    import torch
+    from nets.nn import resnet50
 
     targets = defaultdict(list)
     predictions = defaultdict(list)
@@ -157,10 +164,11 @@ if __name__ == '__main__':
     if torch.cuda.device_count() > 1:
         model = nn.DataParallel(model)
 
+    # [주의] 저장된 가중치 파일명에 맞춰 수정 필요
+    # 예: yolov1_final.pth 또는 best_model.pth
     model.load_state_dict(torch.load('./weights/yolov1_final.pth')['state_dict'])
     model.eval()
     
-    # image_list = image_list[:500]
     with torch.no_grad():
         for image_name in tqdm(image_list):
 

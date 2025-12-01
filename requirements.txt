@@ -1,0 +1,8 @@
+# Core Frameworks (PyTorch는 별도 설치 권장)
+# torch와 torchvision은 CUDA 환경에 따라 버전이 달라지므로,
+# 팀원들에게는 별도 설치를 요청하고 여기에 필수 패키지만 명시합니다.
+numpy
+tqdm
+opencv-python
+matplotlib
+torchsummary
