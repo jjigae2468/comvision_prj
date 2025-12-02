@@ -28,3 +28,6 @@
 
 ```bash
 pip install -r requirements.txt
+
+### 3.3 탐지 명령어
+python3 detect.py --image assets/person.jpg --weight best_model.pth

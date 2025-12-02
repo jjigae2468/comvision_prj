@@ -1,101 +1,24 @@
 import os
 import tqdm
 import numpy as np
-import time
-from datetime import datetime, timedelta
-from torchsummary import summary
-
 import torch
 import torchvision
 from torchvision import transforms
-
 from nets.nn import resnet50
 from utils.loss import yoloLoss
 from utils.dataset import Dataset
-
 import argparse
 import re
+import time
+import matplotlib.pyplot as plt
+import datetime
 
-# mAP 계산을 위한 import
-from eval import Evaluation
-from utils.util import predict, VOC_CLASSES
-from collections import defaultdict
-
-# Early Stopping 클래스
-class EarlyStopping:
-    def __init__(self, patience=5, verbose=False, delta=0, path='./weights/best_model.pth'):
-        self.patience = patience
-        self.verbose = verbose
-        self.counter = 0
-        self.best_score = None
-        self.early_stop = False
-        # [수정된 부분]: np.Inf -> np.inf (NumPy 2.0 에러 해결)
-        self.val_loss_min = np.inf 
-        self.delta = delta
-        self.path = path
-
-    def __call__(self, val_loss, model):
-        score = -val_loss
-
-        if self.best_score is None:
-            self.best_score = score
-            self.save_checkpoint(val_loss, model)
-        elif score < self.best_score + self.delta:
-            self.counter += 1
-            if self.verbose:
-                print(f'EarlyStopping counter: {self.counter} out of {self.patience}')
-            if self.counter >= self.patience:
-                self.early_stop = True
-        else:
-            self.best_score = score
-            self.save_checkpoint(val_loss, model)
-            self.counter = 0
-
-    def save_checkpoint(self, val_loss, model):
-        if self.verbose:
-            print(f'Validation loss decreased ({self.val_loss_min:.6f} --> {val_loss:.6f}).  Saving model ...')
-        
-        if isinstance(model, torch.nn.DataParallel):
-            model_to_save = model.module
-        else:
-            model_to_save = model
-            
-        save = {'state_dict': model_to_save.state_dict()}
-        torch.save(save, self.path)
-        self.val_loss_min = val_loss
-
-# mAP 계산 함수
-def compute_mAP(model, root_path='./Dataset'):
-    model.eval()
-    targets = defaultdict(list)
-    predictions = defaultdict(list)
-    image_list = []
-    
-    with open(f'{root_path}/test.txt') as f:
-        lines = f.readlines()
-        
-    for line in lines:
-        line = line.strip()
-        image_name = f'{line}.jpg'
-        image_list.append(image_name)
-        
-        with open(f'{root_path}/Labels/{line}.txt') as f:
-            objects = f.readlines()
-        for object in objects:
-            c, x1, y1, x2, y2 = map(int, object.rstrip().split())
-            class_name = VOC_CLASSES[c]
-            targets[(image_name, class_name)].append([x1, y1, x2, y2])
-            
-    print("Calculating mAP... (This may take a while)")
-    with torch.no_grad():
-        for image_name in tqdm.tqdm(image_list, desc="Evaluating"): 
-             result = predict(model, image_name, root_path=f'{root_path}/Images/')
-             for (x1, y1), (x2, y2), class_name, img_name, conf in result:
-                predictions[class_name].append([img_name, conf, x1, y1, x2, y2])
-                
-    aps = Evaluation(predictions, targets, threshold=0.5).evaluate()
-    mAP = np.mean(aps)
-    return mAP
+# eval.py에서 검증 함수 가져오기
+try:
+    from eval import run_evaluation
+except ImportError:
+    print("Warning: eval.py not found or run_evaluation not implemented. mAP will not be calculated.")
+    run_evaluation = None
 
 def main(args):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -111,25 +34,25 @@ def main(args):
 
     net = resnet50()
 
+    # Pretrained Weights 로드 부분
     if(args.pre_weights != None):
         pattern = 'yolov1_([0-9]+)'
         strs = args.pre_weights.split('.')[-2]
         f_name = strs.split('/')[-1]
-        epoch_str = re.search(pattern,f_name).group(1)
-        epoch_start = int(epoch_str) + 1
-        net.load_state_dict( \
-            torch.load(f'./weights/{args.pre_weights}')['state_dict'])
+        match = re.search(pattern, f_name)
+        if match:
+            epoch_str = match.group(1)
+            epoch_start = int(epoch_str) + 1
+        else:
+            epoch_start = 1
+        
+        print(f"Loading weights from {args.pre_weights}...")
+        net.load_state_dict(torch.load(f'./weights/{args.pre_weights}')['state_dict'])
     else:
         epoch_start = 1
-        # weights 인자 사용 권장 (UserWarning 대응)
-        try:
-            from torchvision.models import ResNet50_Weights
-            resnet = torchvision.models.resnet50(weights=ResNet50_Weights.DEFAULT)
-        except ImportError:
-            resnet = torchvision.models.resnet50(pretrained=True)
-            
+        print("Loading ImageNet pretrained ResNet50...")
+        resnet = torchvision.models.resnet50(pretrained=True)
         new_state_dict = resnet.state_dict()
-    
         net_dict = net.state_dict()
         for k in new_state_dict.keys():
             if k in net_dict.keys() and not k.startswith('fc'):
@@ -146,6 +69,7 @@ def main(args):
 
     net.train()
 
+    # 학습률 설정 (Backbone은 10배, 나머지는 1배)
     params = []
     params_dict = dict(net.named_parameters())
     for key, value in params_dict.items():
@@ -156,34 +80,49 @@ def main(args):
 
     optimizer = torch.optim.SGD(params, lr=learning_rate, momentum=0.9, weight_decay=5e-4)
 
-    with open('./Dataset/train.txt') as f:
+    # 데이터셋 로드
+    with open(os.path.join(root, 'train.txt')) as f:
         train_names = f.readlines()
     train_dataset = Dataset(root, train_names, train=True, transform=[transforms.ToTensor()])
-    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_size, shuffle=True,
-                                            num_workers=os.cpu_count())
+    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=os.cpu_count())
 
-    with open('./Dataset/test.txt') as f:
+    with open(os.path.join(root, 'test.txt')) as f:
         test_names = f.readlines()
     test_dataset = Dataset(root, test_names, train=False, transform=[transforms.ToTensor()])
-    test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=batch_size // 2, shuffle=False,
-                                            num_workers=os.cpu_count())
+    test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=batch_size // 2, shuffle=False, num_workers=os.cpu_count())
 
     print(f'NUMBER OF DATA SAMPLES: {len(train_dataset)}')
     print(f'BATCH SIZE: {batch_size}')
 
-    # 로그 파일 초기화 (ETA, Epoch Time 추가)
-    with open('train_log.txt', 'w') as f:
-        f.write('Epoch,LR,Total_Loss,Coord_Loss,Obj_Loss,NoObj_Loss,Class_Loss,Val_Loss,mAP,Epoch_Time(s),ETA\n')
+    # --- 설정: mAP 검증 주기 (시간 단축용) ---
+    val_interval = 5 
+    
+    # 로깅 및 Early Stopping 변수 초기화
+    history = {
+        'epoch': [], 'train_loss': [], 'val_loss': [], 'val_map_05': [], 
+        'loss_xy': [], 'loss_wh': [], 'loss_obj': [], 'loss_noobj': [], 'loss_class': []
+    }
+    best_val_loss = float('inf')
+    patience = 3
+    patience_counter = 0
+    train_start_time = time.time()
 
-    early_stopping = EarlyStopping(patience=3, verbose=True, path='./weights/best_model.pth')
-    current_map = 0.0
-    start_train_time = time.time() 
+    # 결과 저장 폴더 생성
+    if not os.path.exists(args.save_dir):
+        os.makedirs(args.save_dir)
 
+    # TXT 로그 파일 헤더 작성
+    log_file_path = 'train_log.txt'
+    if not os.path.exists(log_file_path) or epoch_start == 1:
+        with open(log_file_path, 'w') as f:
+            f.write("Epoch\tTrain Loss\tVal Loss\tVal mAP@0.5\tXY Loss\tWH Loss\tObj Loss\tNoObj Loss\tClass Loss\tTime\tLR\n")
+
+    # --- Training Loop ---
     for epoch in range(epoch_start, num_epochs + 1):
-        epoch_start_time = time.time() # 에폭 시작 시간 기록
-        
         net.train()
+        epoch_start_time = time.time()
 
+        # Learning Rate Schedule (Simple Step Decay)
         if epoch == 30:
             learning_rate = 0.0001
         if epoch == 40:
@@ -191,48 +130,36 @@ def main(args):
         for param_group in optimizer.param_groups:
             param_group['lr'] = learning_rate
 
-        # Training
         total_loss = 0.
-        total_xy = 0.
-        total_wh = 0.
-        total_obj = 0.
-        total_noobj = 0.
-        total_cls = 0.
-
+        epoch_loss_dict = {'loss_xy': 0, 'loss_wh': 0, 'loss_obj': 0, 'loss_noobj': 0, 'loss_class': 0}
+        
         print(('\n' + '%10s' * 3) % ('epoch', 'loss', 'gpu'))
         progress_bar = tqdm.tqdm(enumerate(train_loader), total=len(train_loader))
+        
         for i, (images, target) in progress_bar:
             images = images.to(device)
             target = target.to(device)
 
             pred = net(images)
-            optimizer.zero_grad()
             
-            # Loss 계산 및 Unpacking (loss.py의 6개 값 리턴)
-            loss, xy_l, wh_l, obj_l, noobj_l, cls_l = criterion(pred, target.float())
-
+            # Loss 계산 (세부 Loss Dict 포함)
+            loss, loss_dict = criterion(pred, target.float())
+            
+            optimizer.zero_grad()
             loss.backward()
             optimizer.step()
 
             total_loss += loss.item()
-            total_xy += xy_l.item()
-            total_wh += wh_l.item()
-            total_obj += obj_l.item()
-            total_noobj += noobj_l.item()
-            total_cls += cls_l.item()
+            for k in epoch_loss_dict:
+                epoch_loss_dict[k] += loss_dict[k]
 
             mem = '%.3gG' % (torch.cuda.memory_reserved() / 1E9 if torch.cuda.is_available() else 0)
             s = ('%10s' + '%10.4g' + '%10s') % ('%g/%g' % (epoch, num_epochs), total_loss / (i + 1), mem)
             progress_bar.set_description(s)
         
-        # 평균 Loss 계산
-        avg_loss = total_loss / len(train_loader)
-        avg_coord = (total_xy + total_wh) / len(train_loader)
-        avg_obj = total_obj / len(train_loader)
-        avg_noobj = total_noobj / len(train_loader)
-        avg_cls = total_cls / len(train_loader)
-
-        # Validation
+        avg_train_loss = total_loss / len(train_loader)
+        
+        # --- Validation Loss (매 Epoch 실행 - Early Stopping용) ---
         validation_loss = 0.0
         net.eval()
         with torch.no_grad():
@@ -240,58 +167,102 @@ def main(args):
                 images = images.to(device)
                 target = target.to(device)
                 prediction = net(images)
-                
-                val_res = criterion(prediction, target)
-                if isinstance(val_res, tuple):
-                    loss = val_res[0]
-                else:
-                    loss = val_res
+                loss, _ = criterion(prediction, target)
                 validation_loss += loss.item()
+        validation_loss /= len(test_loader)
+        
+        # --- mAP Calculation (주기적 실행 - 시간 단축용) ---
+        val_map = 0.0
+        # 이전에 기록된 mAP가 있으면 가져옴 (그래프 끊김 방지)
+        if len(history['val_map_05']) > 0:
+            val_map = history['val_map_05'][-1]
             
-        avg_val_loss = validation_loss / len(test_loader)
-        print(f'Validation_Loss: {avg_val_loss:.4f}')
-        
-        # mAP 계산 (5 에폭 간격)
-        if epoch % 5 == 0 or epoch == num_epochs:
-            print(f"\nEvaluating mAP for epoch {epoch}...")
-            current_map = compute_mAP(net, root_path=root)
-            print(f"Epoch {epoch} mAP: {current_map:.4f}")
-            net.train()
+        # 첫 Epoch이거나 5배수 Epoch일 때만 전체 검증 수행
+        do_full_eval = (epoch % val_interval == 0) or (epoch == 1)
 
-        # 시간 계산 (에폭 소요 시간 & ETA)
-        epoch_end_time = time.time()
-        epoch_duration = epoch_end_time - epoch_start_time # 현재 에폭 걸린 시간 (초)
+        if do_full_eval and run_evaluation:
+            print(f"\n[FULL EVAL] Evaluating mAP for Epoch {epoch}...")
+            # mAP 계산 (eval.py)
+            aps = run_evaluation(net, device, root_path=args.data_dir, batch_size=batch_size, threshold=0.5)
+            val_map = np.mean(aps)
         
-        current_time = time.time()
-        elapsed_total = current_time - start_train_time
-        completed_epochs = epoch - epoch_start + 1
-        
-        avg_time_per_epoch = elapsed_total / completed_epochs # 평균 에폭 시간
+        # --- ETA 및 통계 출력 ---
+        epoch_duration = time.time() - epoch_start_time
+        elapsed_time = time.time() - train_start_time
         remaining_epochs = num_epochs - epoch
-        remaining_time = avg_time_per_epoch * remaining_epochs
+        eta = remaining_epochs * epoch_duration
+        eta_str = str(datetime.timedelta(seconds=int(eta)))
         
-        finish_time = datetime.now() + timedelta(seconds=remaining_time)
-        finish_time_str = finish_time.strftime('%m-%d %H:%M')
-        
-        print(f"Epoch Duration: {epoch_duration:.2f}s | ETA: {finish_time_str}")
+        # 세부 Loss 평균
+        avg_xy = epoch_loss_dict['loss_xy'] / len(train_loader)
+        avg_wh = epoch_loss_dict['loss_wh'] / len(train_loader)
+        avg_obj = epoch_loss_dict['loss_obj'] / len(train_loader)
+        avg_noobj = epoch_loss_dict['loss_noobj'] / len(train_loader)
+        avg_class = epoch_loss_dict['loss_class'] / len(train_loader)
 
-        # 로그 파일 쓰기
-        current_lr = optimizer.param_groups[0]['lr']
-        with open('train_log.txt', 'a') as f:
-            f.write(f'{epoch},{current_lr:.6f},{avg_loss:.4f},{avg_coord:.4f},{avg_obj:.4f},{avg_noobj:.4f},{avg_cls:.4f},{avg_val_loss:.4f},{current_map:.4f},{epoch_duration:.2f},{finish_time_str}\n')
+        print(f'\nEpoch [{epoch}/{num_epochs}] Train Loss: {avg_train_loss:.4f}, Val Loss: {validation_loss:.4f}, Val mAP: {val_map:.4f}')
+        print(f'   Details -> XY: {avg_xy:.4f} | WH: {avg_wh:.4f} | Obj: {avg_obj:.4f} | NoObj: {avg_noobj:.4f} | Class: {avg_class:.4f}')
+        print(f'ETA: {eta_str} (Elapsed: {str(datetime.timedelta(seconds=int(elapsed_time)))})')
 
-        # Early Stopping
-        early_stopping(avg_val_loss, net)
-        if early_stopping.early_stop:
-            print("Early stopping triggered! Training stopped.")
-            break
-            
+        # --- 로그 저장 (Memory & TXT) ---
+        history['epoch'].append(epoch)
+        history['train_loss'].append(avg_train_loss)
+        history['val_loss'].append(validation_loss)
+        # mAP는 새로 계산 안 했으면 이전 값 유지
+        history['val_map_05'].append(val_map)
+        for k in epoch_loss_dict:
+            history[k].append(epoch_loss_dict[k] / len(train_loader))
+
+        with open(log_file_path, 'a') as f:
+            f.write(f"{epoch}\t{avg_train_loss:.4f}\t{validation_loss:.4f}\t{val_map:.4f}\t"
+                    f"{avg_xy:.4f}\t{avg_wh:.4f}\t{avg_obj:.4f}\t{avg_noobj:.4f}\t{avg_class:.4f}\t"
+                    f"{epoch_duration:.2f}\t{learning_rate:.6f}\n")
+
+        # --- Early Stopping & Best Model Save ---
+        if validation_loss < best_val_loss:
+            best_val_loss = validation_loss
+            patience_counter = 0
+            torch.save({'state_dict': net.state_dict()}, os.path.join(args.save_dir, 'best_model.pth'))
+            print(f"Saved Best Model at Epoch {epoch} (Val Loss: {validation_loss:.4f})")
+        else:
+            patience_counter += 1
+            print(f"Early Stopping Counter: {patience_counter}/{patience}")
+            if patience_counter >= patience:
+                print("Early Stopping Triggered!")
+                break
+
+        # 주기적 체크포인트 저장
         if (epoch % 10) == 0:
             save = {'state_dict': net.state_dict()}
-            torch.save(save, f'./weights/yolov1_{epoch:04d}.pth')
+            torch.save(save, os.path.join(args.save_dir, f'yolov1_{epoch:04d}.pth'))
 
+    # --- 학습 종료 후 그래프 저장 ---
+    print("Training Finished. Saving graphs...")
+    
+    # Loss Graph
+    plt.figure(figsize=(10, 5))
+    plt.plot(history['epoch'], history['train_loss'], label='Train Loss')
+    plt.plot(history['epoch'], history['val_loss'], label='Val Loss')
+    plt.xlabel('Epoch')
+    plt.ylabel('Loss')
+    plt.legend()
+    plt.title('Training and Validation Loss')
+    plt.savefig('loss_curve.png')
+    
+    # mAP Graph
+    plt.figure(figsize=(10, 5))
+    plt.plot(history['epoch'], history['val_map_05'], label='Val mAP@0.5', color='orange')
+    plt.xlabel('Epoch')
+    plt.ylabel('mAP')
+    plt.legend()
+    plt.title('Validation mAP')
+    plt.savefig('map_curve.png')
+
+    print(f"Total Training Time: {str(datetime.timedelta(seconds=int(time.time() - train_start_time)))}")
+    
+    # Final Weights Save
     save = {'state_dict': net.state_dict()}
-    torch.save(save, './weights/yolov1_final.pth')
+    torch.save(save, os.path.join(args.save_dir, 'yolov1_final.pth'))
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -303,4 +274,5 @@ if __name__ == '__main__':
     parser.add_argument("--save_dir", type=str, default="./weights")
     parser.add_argument("--img_size", type=int, default=448)
     args = parser.parse_args()
+    
     main(args)
