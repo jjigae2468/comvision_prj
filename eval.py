@@ -6,6 +6,8 @@ from utils.util import predict
 from collections import defaultdict
 from tqdm import tqdm
 import time
+import os
+import argparse
 
 VOC_CLASSES = ['aeroplane', 'bicycle', 'bird', 'boat',
                'bottle', 'bus', 'car', 'cat', 'chair',
@@ -107,6 +109,7 @@ class Evaluation:
 
         return aps
 
+# main.py에서 호출하는 함수 (모델 객체를 직접 받음 -> 학습에 영향 없음)
 def run_evaluation(model, device, root_path='./Dataset', batch_size=8, threshold=0.5):
     targets = defaultdict(list)
     predictions = defaultdict(list)
@@ -173,6 +176,35 @@ def run_evaluation(model, device, root_path='./Dataset', batch_size=8, threshold
 
 if __name__ == '__main__':
     from nets.nn import resnet50
+    
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--weight', type=str, default='best_model.pth', help='Weight file name in ./weights/')
+    parser.add_argument('--data_dir', type=str, default='./Dataset', help='Path to dataset')
+    parser.add_argument('--threshold', type=float, default=0.5, help='IoU Threshold')
+    args = parser.parse_args()
+    
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model = resnet50().to(device)
-    run_evaluation(model, device)
+    
+    # 가중치 경로 유연하게 처리
+    weight_path = args.weight
+    if not os.path.exists(weight_path):
+        weight_path = os.path.join('./weights', args.weight)
+        
+    if os.path.exists(weight_path):
+        print(f"Loading weights from {weight_path}...")
+        # [수정됨] DataParallel 저장 모델 로딩 호환성 코드
+        state_dict = torch.load(weight_path, map_location=device)['state_dict']
+        from collections import OrderedDict
+        new_state_dict = OrderedDict()
+        
+        for k, v in state_dict.items():
+            name = k[7:] if k.startswith('module.') else k # remove `module.`
+            new_state_dict[name] = v
+            
+        model.load_state_dict(new_state_dict)
+    else:
+        print(f"Error: Weight file not found at {weight_path}")
+        exit(1)
+        
+    run_evaluation(model, device, root_path=args.data_dir, threshold=args.threshold)

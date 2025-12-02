@@ -1,0 +1,30 @@
+(venv) user@AIX411-16:~/cv/comvision_prj$ python3 check_data.py
+Checking Class Distribution...
+100%|████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 5717/5717 [00:00<00:00, 45926.97it/s]
+
+[Class Distribution Results]
+person         : 4194
+chair          : 1178
+car            : 1013
+dog            : 756
+bottle         : 629
+cat            : 605
+bird           : 560
+pottedplant    : 484
+aeroplane      : 432
+boat           : 426
+sheep          : 400
+tvmonitor      : 392
+motorbike      : 357
+bicycle        : 353
+horse          : 350
+train          : 313
+diningtable    : 304
+bus            : 292
+cow            : 290
+sofa           : 281
+
+Visualizing Augmented Data...
+DATA INITIALIZATION
+Saving 10 augmented samples to './augmented_samples'...
+Done. Check the 'augmented_samples' folder.

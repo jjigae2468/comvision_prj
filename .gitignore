@@ -51,3 +51,4 @@ result.jpg
 # 위에서 모든 폴더를 제외시켰더라도, 아래 폴더는 추적을 강제하여 최종 보고서 자료를 보관
 !report_assets/
 !results/
+!results/**

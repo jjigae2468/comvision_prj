@@ -28,6 +28,19 @@
 
 ```bash
 pip install -r requirements.txt
+```
 
 ### 3.3 탐지 명령어
+```bash
 python3 detect.py --image assets/person.jpg --weight best_model.pth
+```
+
+### 3.4 실행 명령어
+```bash
+python3 main.py --epoch 50 --batch_size 48
+```
+
+### 3.5 평가 명령어
+```bash
+python3 eval.py --weight best_model.pth
+```
