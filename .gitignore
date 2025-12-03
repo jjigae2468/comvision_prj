@@ -14,6 +14,9 @@ env/
 __pycache__/
 *.py[cod]
 *$py.class
+*.pyc
+*.pyd
+*.pyo
 
 
 # 3. 대용량 데이터 및 모델 (Git 추적 제외 필수)
