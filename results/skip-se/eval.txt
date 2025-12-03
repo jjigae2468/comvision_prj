@@ -1,0 +1,57 @@
+(venv) user@AIX411-17:~/cv/comvision_prj$ python3 eval.py --weight best_model.pth
+Loading weights from ./weights/best_model.pth...
+/home/user/cv/comvision_prj/eval.py:197: FutureWarning: You are using `torch.load` with `weights_only=False` (the current default value), which uses the default pickle module implicitly. It is possible to construct malicious pickle data which will execute arbitrary code during unpickling (See https://github.com/pytorch/pytorch/blob/main/SECURITY.md#untrusted-models for more details). In a future release, the default value for `weights_only` will be flipped to `True`. This limits the functions that could be executed during unpickling. Arbitrary objects will no longer be allowed to be loaded via this mode unless they are explicitly allowlisted by the user via `torch.serialization.add_safe_globals`. We recommend you start setting `weights_only=True` for any use case where you don't have full control of the loaded file. Please open an issue on GitHub for any issues related to this experimental feature.
+  state_dict = torch.load(weight_path, map_location=device)['state_dict']
+                                                                                                                                                                                                                                            
+Inference Speed: 29.46 ms/img | FPS: 33.95
+
+--- Evaluation @ IoU 0.5 ---
+Evaluating with IoU Threshold 0.5
+CLASS                     AP
+aeroplane                 0.56
+bicycle                   0.43
+bird                      0.44
+boat                      0.19
+bottle                    0.20
+bus                       0.50
+car                       0.39
+cat                       0.76
+chair                     0.26
+cow                       0.37
+diningtable               0.26
+dog                       0.64
+horse                     0.55
+motorbike                 0.49
+person                    0.48
+pottedplant               0.16
+sheep                     0.41
+sofa                      0.31
+train                     0.56
+tvmonitor                 0.38
+
+--- Evaluation @ IoU 0.75 ---
+Evaluating with IoU Threshold 0.75
+CLASS                     AP
+aeroplane                 0.21
+bicycle                   0.11
+bird                      0.07
+boat                      0.02
+bottle                    0.01
+bus                       0.28
+car                       0.09
+cat                       0.34
+chair                     0.03
+cow                       0.07
+diningtable               0.04
+dog                       0.25
+horse                     0.21
+motorbike                 0.16
+person                    0.09
+pottedplant               0.00
+sheep                     0.07
+sofa                      0.10
+train                     0.26
+tvmonitor                 0.08
+
+Final mAP@0.5: 0.42
+Final mAP@0.75: 0.13

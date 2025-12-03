@@ -6,6 +6,25 @@ import torch.nn.functional as F
 
 resnet50_url = 'https://download.pytorch.org/models/resnet50-19c8e357.pth',
 
+# [추가] SE-Block (Squeeze-and-Excitation) 정의
+# 채널 간의 중요도를 학습해서 성능을 높이는 Attention 모듈
+class SELayer(nn.Module):
+    def __init__(self, channel, reduction=16):
+        super(SELayer, self).__init__()
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+        self.fc = nn.Sequential(
+            nn.Linear(channel, channel // reduction, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Linear(channel // reduction, channel, bias=False),
+            nn.Sigmoid()
+        )
+
+    def forward(self, x):
+        b, c, _, _ = x.size()
+        y = self.avg_pool(x).view(b, c)
+        y = self.fc(y).view(b, c, 1, 1)
+        return x * y.expand_as(x)
+
 
 def conv3x3(in_planes, out_planes, stride=1):
     """3x3 convolution with padding"""
@@ -98,6 +117,9 @@ class DetNet(nn.Module):
         self.bn2 = nn.BatchNorm2d(planes)
         self.conv3 = nn.Conv2d(planes, self.expansion * planes, kernel_size=1, bias=False)
         self.bn3 = nn.BatchNorm2d(self.expansion * planes)
+        
+        # [추가] DetNet 블록 마지막에 SE-Block 장착!
+        self.se = SELayer(self.expansion * planes)
 
         self.downsample = nn.Sequential()
         if stride != 1 or in_planes != self.expansion * planes or block_type == 'B':
@@ -110,6 +132,10 @@ class DetNet(nn.Module):
         out = F.relu(self.bn1(self.conv1(x)))
         out = F.relu(self.bn2(self.conv2(out)))
         out = self.bn3(self.conv3(out))
+        
+        # [적용] Attention: 중요한 채널은 살리고 나머지는 억제
+        out = self.se(out)
+
         out += self.downsample(x)
         out = F.relu(out)
         return out
@@ -131,18 +157,17 @@ class ResNet(nn.Module):
         self.layer3 = self._make_layer(block, 256, layers[2], stride=2)
         self.layer4 = self._make_layer(block, 512, layers[3], stride=2)
         
-        # [기존 유지] DetNet 채널 256 (수정 안 함)
+        # [유지] DetNet 채널은 256으로 유지 (SE-Block이 성능 보완)
         self.layer5 = self._make_detnet_layer(in_channels=2048)
         
-        # [추가] Skip Connection용 1x1 Conv
-        # Layer3(1024채널) -> 256채널로 압축
+        # [추가] Skip Connection을 위한 1x1 Conv (1024 -> 256)
         self.skip_layer = nn.Conv2d(1024, 256, kernel_size=1)
 
-        # [수정] 마지막 Conv 입력 채널 변경
-        # DetNet(256) + Skip(256) = 512 채널 (주의: 완전체는 768이었음)
+        # [수정] 마지막 Conv 입력 채널 계산
+        # DetNet(256) + Skip(256) = 512 채널
         self.conv_end = nn.Conv2d(512, 30, kernel_size=3, stride=1, padding=1, bias=False)
         
-        # [기존 유지] 마지막 BN 사용 (수정 안 함) - 이게 있어야 실험 비교가 됨
+        # [유지] 마지막 BN 활성화 (학습 안정성을 위해)
         self.bn_end = nn.BatchNorm2d(30) 
 
         for m in self.modules():
@@ -169,7 +194,7 @@ class ResNet(nn.Module):
         return nn.Sequential(*layers)
 
     def _make_detnet_layer(self, in_channels):
-        # [기존 유지] planes=256 고정
+        # planes=256 고정 (기존 DetNet 구조 유지)
         layers = [
             DetNet(in_planes=in_channels, planes=256, block_type='B'),
             DetNet(in_planes=256, planes=256, block_type='A'),
@@ -186,26 +211,22 @@ class ResNet(nn.Module):
         x = self.layer1(x)
         x = self.layer2(x)
         
-        # [변경] Layer 3에서 정보 복사 (Skip Connection 시작)
+        # [저장] Layer 3 결과 저장 (Skip용)
         x3 = self.layer3(x) 
         
-        # 메인 경로는 계속 진행
         x = self.layer4(x3)
-        x = self.layer5(x) # DetNet 통과 (14x14, 256ch)
+        x = self.layer5(x) # DetNet 통과 (여기서 SE-Block 동작함)
 
-        # [추가] Skip Connection 처리
-        # 1. 채널 압축 (1024 -> 256)
-        skip = self.skip_layer(x3) 
-        # 2. 크기 맞춤 (28x28 -> 14x14)
-        skip = F.avg_pool2d(skip, 2, stride=2) 
-
-        # 3. 채널 방향 결합 (Concat)
-        # 결과: (Batch, 512, 14, 14) -> DetNet(256) + Skip(256)
+        # [처리] Skip Connection
+        skip = self.skip_layer(x3)       # 1024 -> 256
+        skip = F.avg_pool2d(skip, 2, stride=2) # 28x28 -> 14x14
+        
+        # [결합] (Batch, 256+256, 14, 14)
         x = torch.cat((x, skip), 1)
 
-        # 최종 예측 (BN 있음)
+        # [최종 예측] BN 적용됨
         x = self.conv_end(x)
-        x = self.bn_end(x) # [기존 유지] BN 사용
+        x = self.bn_end(x)
         
         x = torch.sigmoid(x)
         x = x.permute(0, 2, 3, 1)
