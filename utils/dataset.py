@@ -41,27 +41,40 @@ class Dataset(data.Dataset):
         self.num_samples = len(self.boxes)
 
     def __getitem__(self, idx):
-        f_name = self.f_names[idx]
-        img = cv2.imread(os.path.join(self.root_images, f_name))
-        boxes = self.boxes[idx].clone()
-        labels = self.labels[idx].clone()
-
-        if self.train:
-            # img = self.random_bright(img)
-            img, boxes = self.random_flip(img, boxes)
-            img, boxes = self.randomScale(img, boxes)
+        # [수정] 50% 확률로 Mosaic Augmentation 적용
+        if self.train and random.random() < 0.5:
+            img, boxes, labels = self.load_mosaic(idx)
+            # Mosaic를 썼을 때는 이미 기하학적 변형이 심하므로 RandomCrop/Shift 등은 건너뛰고 색상 변형만 줌
             img = self.randomBlur(img)
             img = self.RandomBrightness(img)
             img = self.RandomHue(img)
             img = self.RandomSaturation(img)
-            img, boxes, labels = self.randomShift(img, boxes, labels)
-            img, boxes, labels = self.randomCrop(img, boxes, labels)
+        else:
+            # 기존 로직 (Mosaic 안 걸렸을 때)
+            f_name = self.f_names[idx]
+            img = cv2.imread(os.path.join(self.root_images, f_name))
+            boxes = self.boxes[idx].clone()
+            labels = self.labels[idx].clone()
+
+            if self.train:
+                # img = self.random_bright(img)
+                img, boxes = self.random_flip(img, boxes)
+                img, boxes = self.randomScale(img, boxes)
+                img = self.randomBlur(img)
+                img = self.RandomBrightness(img)
+                img = self.RandomHue(img)
+                img = self.RandomSaturation(img)
+                img, boxes, labels = self.randomShift(img, boxes, labels)
+                img, boxes, labels = self.randomCrop(img, boxes, labels)
         
         h, w, _ = img.shape
+        # 박스 정규화 (0~1)
         boxes /= torch.Tensor([w, h, w, h]).expand_as(boxes)
+        
         img = self.BGR2RGB(img)
         img = self.subMean(img, self.mean)
         img = cv2.resize(img, (self.image_size, self.image_size))
+        
         target = self.encoder(boxes, labels)  # 14x14x30
         for t in self.transform:
             img = t(img)
@@ -70,6 +83,82 @@ class Dataset(data.Dataset):
 
     def __len__(self):
         return self.num_samples
+
+    # [추가] Mosaic Augmentation 구현
+    def load_mosaic(self, index):
+        labels4 = []
+        s = self.image_size
+        
+        # 중심점 랜덤 설정
+        yc, xc = [int(random.uniform(-x, 2 * s + x)) for x in [-s // 2]]
+        
+        # 4장의 이미지 인덱스 선택
+        indices = [index] + [random.randint(0, self.num_samples - 1) for _ in range(3)]
+
+        # 빈 캔버스 (회색)
+        result_img = np.full((s * 2, s * 2, 3), 114, dtype=np.uint8) 
+
+        for i, idx in enumerate(indices):
+            # 이미지 로드
+            path = os.path.join(self.root_images, self.f_names[idx])
+            img = cv2.imread(path)
+            h, w, _ = img.shape
+            
+            # 박스 로드
+            boxes = self.boxes[idx].clone()
+            labels = self.labels[idx].clone()
+
+            # 배치 위치 계산
+            if i == 0:  # top left
+                x1a, y1a, x2a, y2a = max(xc - w, 0), max(yc - h, 0), xc, yc
+                x1b, y1b, x2b, y2b = w - (x2a - x1a), h - (y2a - y1a), w, h
+            elif i == 1:  # top right
+                x1a, y1a, x2a, y2a = xc, max(yc - h, 0), min(xc + w, s * 2), yc
+                x1b, y1b, x2b, y2b = 0, h - (y2a - y1a), min(w, x2a - x1a), h
+            elif i == 2:  # bottom left
+                x1a, y1a, x2a, y2a = max(xc - w, 0), yc, xc, min(yc + h, s * 2)
+                x1b, y1b, x2b, y2b = w - (x2a - x1a), 0, w, min(h, y2a - y1a)
+            elif i == 3:  # bottom right
+                x1a, y1a, x2a, y2a = xc, yc, min(xc + w, s * 2), min(yc + h, s * 2)
+                x1b, y1b, x2b, y2b = 0, 0, min(w, x2a - x1a), min(h, y2a - y1a)
+
+            # 이미지 붙이기
+            result_img[y1a:y2a, x1a:x2a] = img[y1b:y2b, x1b:x2b]
+            padw = x1a - x1b
+            padh = y1a - y1b
+
+            # 박스 좌표 이동
+            if len(boxes) > 0:
+                boxes[:, 0] += padw
+                boxes[:, 2] += padw
+                boxes[:, 1] += padh
+                boxes[:, 3] += padh
+                
+                # 라벨 정보 유지 (Label + Box)
+                for box, label in zip(boxes, labels):
+                    labels4.append(torch.cat([torch.tensor([label]), box]))
+
+        # 결과 이미지 리사이즈 (448x448)
+        final_img = cv2.resize(result_img, (s, s))
+        
+        # 박스 좌표 조정 (Resize 비율에 맞춰서)
+        scale = s / (s * 2)  # 0.5
+        
+        if len(labels4) > 0:
+            labels4 = torch.stack(labels4)
+            # 좌표 스케일링
+            labels4[:, 1:] *= scale
+            
+            # 캔버스 밖으로 나간 박스 클리핑
+            labels4[:, 1:] = labels4[:, 1:].clamp(min=0, max=s-1)
+            
+            out_boxes = labels4[:, 1:]
+            out_labels = labels4[:, 0]
+        else:
+            out_boxes = torch.zeros((0, 4))
+            out_labels = torch.zeros((0,))
+
+        return final_img, out_boxes, out_labels
 
     def encoder(self, boxes, labels):
         grid_num = 14
@@ -81,6 +170,10 @@ class Dataset(data.Dataset):
             cxcy_sample = cxcy[i]
             #grid cell의 Y축과 X축의 index 계산
             ij = (cxcy_sample / cell_size).ceil() - 1
+            
+            # 인덱스 에러 방지 (Clamp)
+            ij = ij.clamp(min=0, max=grid_num-1)
+            
             #grid cell의 2개 bbox의  confidence score을 1로 set
             target[int(ij[1]), int(ij[0]), 4] = 1
             target[int(ij[1]), int(ij[0]), 9] = 1
@@ -244,22 +337,3 @@ class Dataset(data.Dataset):
             im = im * alpha + random.randrange(-delta, delta)
             im = im.clip(min=0, max=255).astype(np.uint8)
         return im
-
-
-def main():
-    from torch.utils.data import DataLoader
-    import torchvision.transforms as transforms
-    file_root = './Dataset'
-    with open('./Dataset/train.txt') as f:
-        train_names = f.readlines()
-    train_dataset = Dataset(root=file_root, file_names=train_names, train=True,
-                            transform=[transforms.ToTensor()])
-    train_loader = DataLoader(train_dataset, batch_size=1, shuffle=False, num_workers=os.cpu_count() - 2)
-    train_iter = iter(train_loader)
-    for i in range(10):
-        img, target = next(train_iter)
-        print(img, target)
-
-
-if __name__ == '__main__':
-    main()

@@ -12,6 +12,7 @@ import re
 import time
 import matplotlib.pyplot as plt
 import datetime
+from torch.optim.lr_scheduler import CosineAnnealingLR # [추가]
 
 # eval.py에서 검증 함수 가져오기
 try:
@@ -32,6 +33,7 @@ def main(args):
     np.random.seed(seed)
     torch.manual_seed(seed)
 
+    # [중요] nets/nn.py가 Skip-SE 구조인지 확인할 것
     net = resnet50()
 
     # Pretrained Weights 로드 부분
@@ -79,6 +81,10 @@ def main(args):
             params += [{'params': [value], 'lr': learning_rate}]
 
     optimizer = torch.optim.SGD(params, lr=learning_rate, momentum=0.9, weight_decay=5e-4)
+    
+    # [수정] Cosine Annealing Scheduler 적용
+    # T_max는 전체 epoch 수와 맞춰야 함. 최소 LR은 1e-6까지 떨어짐.
+    scheduler = CosineAnnealingLR(optimizer, T_max=num_epochs, eta_min=1e-6)
 
     # 데이터셋 로드
     with open(os.path.join(root, 'train.txt')) as f:
@@ -103,7 +109,7 @@ def main(args):
         'loss_xy': [], 'loss_wh': [], 'loss_obj': [], 'loss_noobj': [], 'loss_class': []
     }
     best_val_loss = float('inf')
-    patience = 3
+    patience = 5 # [수정] Cosine Annealing을 쓸 때는 Patience를 조금 늘려주는 게 좋음
     patience_counter = 0
     train_start_time = time.time()
 
@@ -122,18 +128,14 @@ def main(args):
         net.train()
         epoch_start_time = time.time()
 
-        # Learning Rate Schedule (Simple Step Decay)
-        if epoch == 30:
-            learning_rate = 0.0001
-        if epoch == 40:
-            learning_rate = 0.00001
-        for param_group in optimizer.param_groups:
-            param_group['lr'] = learning_rate
-
+        # [삭제] 기존 StepLR 코드 삭제됨
+        
         total_loss = 0.
         epoch_loss_dict = {'loss_xy': 0, 'loss_wh': 0, 'loss_obj': 0, 'loss_noobj': 0, 'loss_class': 0}
         
-        print(('\n' + '%10s' * 3) % ('epoch', 'loss', 'gpu'))
+        # 현재 LR 가져오기
+        current_lr = optimizer.param_groups[0]['lr']
+        print(('\n' + '%10s' * 4) % ('epoch', 'loss', 'gpu', 'lr'))
         progress_bar = tqdm.tqdm(enumerate(train_loader), total=len(train_loader))
         
         for i, (images, target) in progress_bar:
@@ -142,7 +144,7 @@ def main(args):
 
             pred = net(images)
             
-            # Loss 계산 (세부 Loss Dict 포함)
+            # Loss 계산
             loss, loss_dict = criterion(pred, target.float())
             
             optimizer.zero_grad()
@@ -154,12 +156,15 @@ def main(args):
                 epoch_loss_dict[k] += loss_dict[k]
 
             mem = '%.3gG' % (torch.cuda.memory_reserved() / 1E9 if torch.cuda.is_available() else 0)
-            s = ('%10s' + '%10.4g' + '%10s') % ('%g/%g' % (epoch, num_epochs), total_loss / (i + 1), mem)
+            s = ('%10s' + '%10.4g' + '%10s' + '%10.6f') % ('%g/%g' % (epoch, num_epochs), total_loss / (i + 1), mem, current_lr)
             progress_bar.set_description(s)
         
+        # [추가] Epoch 끝날 때마다 Scheduler Step
+        scheduler.step()
+
         avg_train_loss = total_loss / len(train_loader)
         
-        # --- Validation Loss (매 Epoch 실행 - Early Stopping용) ---
+        # --- Validation Loss ---
         validation_loss = 0.0
         net.eval()
         with torch.no_grad():
@@ -171,18 +176,15 @@ def main(args):
                 validation_loss += loss.item()
         validation_loss /= len(test_loader)
         
-        # --- mAP Calculation (주기적 실행 - 시간 단축용) ---
+        # --- mAP Calculation ---
         val_map = 0.0
-        # 이전에 기록된 mAP가 있으면 가져옴 (그래프 끊김 방지)
         if len(history['val_map_05']) > 0:
             val_map = history['val_map_05'][-1]
             
-        # 첫 Epoch이거나 5배수 Epoch일 때만 전체 검증 수행
         do_full_eval = (epoch % val_interval == 0) or (epoch == 1)
 
         if do_full_eval and run_evaluation:
             print(f"\n[FULL EVAL] Evaluating mAP for Epoch {epoch}...")
-            # mAP 계산 (eval.py)
             aps = run_evaluation(net, device, root_path=args.data_dir, batch_size=batch_size, threshold=0.5)
             val_map = np.mean(aps)
         
@@ -193,7 +195,6 @@ def main(args):
         eta = remaining_epochs * epoch_duration
         eta_str = str(datetime.timedelta(seconds=int(eta)))
         
-        # 세부 Loss 평균
         avg_xy = epoch_loss_dict['loss_xy'] / len(train_loader)
         avg_wh = epoch_loss_dict['loss_wh'] / len(train_loader)
         avg_obj = epoch_loss_dict['loss_obj'] / len(train_loader)
@@ -204,11 +205,10 @@ def main(args):
         print(f'   Details -> XY: {avg_xy:.4f} | WH: {avg_wh:.4f} | Obj: {avg_obj:.4f} | NoObj: {avg_noobj:.4f} | Class: {avg_class:.4f}')
         print(f'ETA: {eta_str} (Elapsed: {str(datetime.timedelta(seconds=int(elapsed_time)))})')
 
-        # --- 로그 저장 (Memory & TXT) ---
+        # --- 로그 저장 ---
         history['epoch'].append(epoch)
         history['train_loss'].append(avg_train_loss)
         history['val_loss'].append(validation_loss)
-        # mAP는 새로 계산 안 했으면 이전 값 유지
         history['val_map_05'].append(val_map)
         for k in epoch_loss_dict:
             history[k].append(epoch_loss_dict[k] / len(train_loader))
@@ -216,7 +216,7 @@ def main(args):
         with open(log_file_path, 'a') as f:
             f.write(f"{epoch}\t{avg_train_loss:.4f}\t{validation_loss:.4f}\t{val_map:.4f}\t"
                     f"{avg_xy:.4f}\t{avg_wh:.4f}\t{avg_obj:.4f}\t{avg_noobj:.4f}\t{avg_class:.4f}\t"
-                    f"{epoch_duration:.2f}\t{learning_rate:.6f}\n")
+                    f"{epoch_duration:.2f}\t{current_lr:.6f}\n")
 
         # --- Early Stopping & Best Model Save ---
         if validation_loss < best_val_loss:
@@ -227,11 +227,11 @@ def main(args):
         else:
             patience_counter += 1
             print(f"Early Stopping Counter: {patience_counter}/{patience}")
+            # Cosine Annealing 중에는 Loss가 일시적으로 튈 수 있으니 Early Stopping을 덜 민감하게 하는 게 좋음
             if patience_counter >= patience:
                 print("Early Stopping Triggered!")
                 break
 
-        # 주기적 체크포인트 저장
         if (epoch % 10) == 0:
             save = {'state_dict': net.state_dict()}
             torch.save(save, os.path.join(args.save_dir, f'yolov1_{epoch:04d}.pth'))
@@ -239,7 +239,6 @@ def main(args):
     # --- 학습 종료 후 그래프 저장 ---
     print("Training Finished. Saving graphs...")
     
-    # Loss Graph
     plt.figure(figsize=(10, 5))
     plt.plot(history['epoch'], history['train_loss'], label='Train Loss')
     plt.plot(history['epoch'], history['val_loss'], label='Val Loss')
@@ -249,7 +248,6 @@ def main(args):
     plt.title('Training and Validation Loss')
     plt.savefig('loss_curve.png')
     
-    # mAP Graph
     plt.figure(figsize=(10, 5))
     plt.plot(history['epoch'], history['val_map_05'], label='Val mAP@0.5', color='orange')
     plt.xlabel('Epoch')
@@ -260,7 +258,6 @@ def main(args):
 
     print(f"Total Training Time: {str(datetime.timedelta(seconds=int(time.time() - train_start_time)))}")
     
-    # Final Weights Save
     save = {'state_dict': net.state_dict()}
     torch.save(save, os.path.join(args.save_dir, 'yolov1_final.pth'))
 
