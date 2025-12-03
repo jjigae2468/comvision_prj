@@ -44,3 +44,9 @@ python3 main.py --epoch 50 --batch_size 48
 ```bash
 python3 eval.py --weight best_model.pth
 ```
+
+
+### 3.6 skip-denet 실행 명령어
+```bash
+python3 main.py --epoch 50 --batch_size 48 --lr 0.0001
+```

@@ -26,7 +26,7 @@ class yoloLoss(nn.Module):
         inter_w = torch.clamp(inter_w, 0)
         
         inter = inter_w * inter_h
-        union = w1 * h1 + w2 * h2 - inter
+        union = w1 * h1 + w2 * h2 - inter + 1e-6 # [수정] 0으로 나누기 방지 (epsilon 추가)
         return inter / union
 
     def conver_box(self, box, index):
@@ -72,8 +72,11 @@ class yoloLoss(nn.Module):
                              target_boxes[obj_mask][:, :2],
                              reduction="sum")
         
-        wh_loss = F.mse_loss(torch.sqrt(target_boxes[obj_mask][:, 2:4]),
-                             torch.sqrt(pred_boxes[obj_mask][:, 2:4]),
+        # [수정] sqrt 씌우기 전에 음수 방지 (절댓값 + epsilon)
+        # 1. 0보다 작은 값이 들어오면 sqrt에서 NaN 발생 -> torch.abs() 또는 clamp 사용
+        # 2. 아주 작은 값(1e-6)을 더해서 0이 되는 것도 방지
+        wh_loss = F.mse_loss(torch.sqrt(torch.clamp(target_boxes[obj_mask][:, 2:4], min=1e-6)),
+                             torch.sqrt(torch.clamp(pred_boxes[obj_mask][:, 2:4], min=1e-6)),
                              reduction="sum")
         
         class_loss = F.mse_loss(pred_cls[sig_mask],
@@ -85,7 +88,6 @@ class yoloLoss(nn.Module):
                     + self.lambda_coord * xy_loss + self.lambda_coord * wh_loss \
                     + class_loss
         
-        # 세부 Loss 정보를 담은 딕셔너리 생성
         loss_dict = {
             'loss_xy': (self.lambda_coord * xy_loss).item() / batch_size,
             'loss_wh': (self.lambda_coord * wh_loss).item() / batch_size,

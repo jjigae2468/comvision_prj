@@ -1,0 +1,55 @@
+(venv) user@AIX411-16:~/cv/comvision_prj$ python3 eval.py --weight best_model.pth
+Loading weights from ./weights/best_model.pth...
+                                                                                                                                                                                                                                                    
+Inference Speed: 26.20 ms/img | FPS: 38.17
+
+--- Evaluation @ IoU 0.5 ---
+Evaluating with IoU Threshold 0.5
+CLASS                     AP
+aeroplane                 0.00
+bicycle                   0.00
+bird                      0.00
+boat                      0.00
+bottle                    0.00
+bus                       0.00
+car                       0.00
+cat                       0.00
+chair                     0.00
+cow                       0.00
+diningtable               0.00
+dog                       0.00
+horse                     0.00
+motorbike                 0.00
+person                    0.00
+pottedplant               0.00
+sheep                     0.00
+sofa                      0.00
+train                     0.00
+tvmonitor                 0.00
+
+--- Evaluation @ IoU 0.75 ---
+Evaluating with IoU Threshold 0.75
+CLASS                     AP
+aeroplane                 0.00
+bicycle                   0.00
+bird                      0.00
+boat                      0.00
+bottle                    0.00
+bus                       0.00
+car                       0.00
+cat                       0.00
+chair                     0.00
+cow                       0.00
+diningtable               0.00
+dog                       0.00
+horse                     0.00
+motorbike                 0.00
+person                    0.00
+pottedplant               0.00
+sheep                     0.00
+sofa                      0.00
+train                     0.00
+tvmonitor                 0.00
+
+Final mAP@0.5: 0.00
+Final mAP@0.75: 0.00

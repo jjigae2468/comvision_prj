@@ -130,12 +130,22 @@ class ResNet(nn.Module):
         self.layer2 = self._make_layer(block, 128, layers[1], stride=2)
         self.layer3 = self._make_layer(block, 256, layers[2], stride=2)
         self.layer4 = self._make_layer(block, 512, layers[3], stride=2)
-        # self.layer5 = self._make_layer(block, 512, layers[3], stride=2)
-        self.layer5 = self._make_detnet_layer(in_channels=2048)
-        # self.avgpool = nn.AvgPool2d(14) #fit 448 input size
-        # self.fc = nn.Linear(512 * block.expansion, num_classes)
-        self.conv_end = nn.Conv2d(256, 30, kernel_size=3, stride=1, padding=1, bias=False)
-        self.bn_end = nn.BatchNorm2d(30)
+        
+        # [수정] DetNet 채널 확장 (256 -> 512)
+        # Layer4의 출력 채널은 2048, 이를 512로 변환
+        self.layer5 = self._make_detnet_layer(in_channels=2048, planes=512)
+        
+        # [추가] Skip Connection을 위한 1x1 Conv
+        # Layer3의 출력(1024채널)을 가져와서 256채널로 압축
+        self.skip_layer = nn.Conv2d(1024, 256, kernel_size=1)
+
+        # [수정] 마지막 Conv 입력 채널 변경
+        # DetNet 출력(512) + Skip 출력(256) = 768 채널
+        self.conv_end = nn.Conv2d(768, 30, kernel_size=3, stride=1, padding=1, bias=False)
+        
+        # [삭제] 마지막 BN은 회귀 문제(좌표 예측)를 방해하므로 제거
+        # self.bn_end = nn.BatchNorm2d(30) 
+
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
                 n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
@@ -159,11 +169,12 @@ class ResNet(nn.Module):
 
         return nn.Sequential(*layers)
 
-    def _make_detnet_layer(self, in_channels):
+    def _make_detnet_layer(self, in_channels, planes):
+        # [수정] planes 인자를 받아서 채널 수를 유동적으로 조절 가능하게 변경
         layers = [
-            DetNet(in_planes=in_channels, planes=256, block_type='B'),
-            DetNet(in_planes=256, planes=256, block_type='A'),
-            DetNet(in_planes=256, planes=256, block_type='A')
+            DetNet(in_planes=in_channels, planes=planes, block_type='B'),
+            DetNet(in_planes=planes, planes=planes, block_type='A'),
+            DetNet(in_planes=planes, planes=planes, block_type='A')
         ]
         return nn.Sequential(*layers)
 
@@ -175,17 +186,30 @@ class ResNet(nn.Module):
 
         x = self.layer1(x)
         x = self.layer2(x)
-        x = self.layer3(x)
-        x = self.layer4(x)
-        x = self.layer5(x)
-        # x = self.avgpool(x)
-        # x = x.view(x.size(0), -1)
-        # x = self.fc(x)
+        
+        # [변경] Layer 3에서 Skip Connection 분기
+        x3 = self.layer3(x) 
+        
+        # 메인 경로는 계속 진행
+        x = self.layer4(x3)
+        x = self.layer5(x) # DetNet 통과 (14x14, 512ch)
+
+        # [추가] Skip Connection 처리
+        # 1. 채널 압축 (1024 -> 256)
+        skip = self.skip_layer(x3) 
+        # 2. 크기 맞춤 (28x28 -> 14x14)
+        skip = F.avg_pool2d(skip, 2, stride=2) 
+
+        # 3. 채널 방향 결합 (Concat)
+        # 결과: (Batch, 768, 14, 14)
+        x = torch.cat((x, skip), 1)
+
+        # 최종 예측 (BN 제거됨)
         x = self.conv_end(x)
-        x = self.bn_end(x)
+        # x = self.bn_end(x) # 사용 안 함
+        
         x = torch.sigmoid(x)
-        # x = x.view(-1,14,14,30)
-        x = x.permute(0, 2, 3, 1)  # (-1,14,14,30)
+        x = x.permute(0, 2, 3, 1)  # (-1, 14, 14, 30)
 
         return x
 

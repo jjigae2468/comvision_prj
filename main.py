@@ -147,6 +147,10 @@ def main(args):
             
             optimizer.zero_grad()
             loss.backward()
+
+            # [긴급 추가] Gradient가 5.0을 넘어가면 강제로 깎아버림 (폭발 방지)
+            torch.nn.utils.clip_grad_norm_(net.parameters(), 5.0)# [긴급 추가] Gradient가 5.0을 넘어가면 강제로 깎아버림 (폭발 방지)
+
             optimizer.step()
 
             total_loss += loss.item()
