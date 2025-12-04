@@ -45,8 +45,9 @@ class yoloLoss(nn.Module):
         target_cls = target[:, :, :, 10:]
         pred_cls = pred[:, :, :, 10:]
         
-        obj_mask = (target_boxes[..., 4] > 0).byte()
-        sig_mask = obj_mask[..., 1].bool()
+        # [수정] .byte() -> .bool()로 변경 (Deprecation Warning 해결)
+        obj_mask = (target_boxes[..., 4] > 0).bool()
+        sig_mask = obj_mask[..., 1] # 이미 bool 타입
         index = torch.where(sig_mask == True)
         
         for img_i, y, x in zip(*index):
@@ -55,7 +56,7 @@ class yoloLoss(nn.Module):
             target_box = target_boxes[img_i, y, x]
             ious = self.compute_iou(pbox[:, :4], target_box[:, :4], [x, y])
             iou, max_i = ious.max(0)
-            obj_mask[img_i, y, x, 1 - max_i] = 0
+            obj_mask[img_i, y, x, 1 - max_i] = False # bool 타입에 맞게 0 -> False
         
         noobj_mask = ~obj_mask
          
@@ -85,7 +86,6 @@ class yoloLoss(nn.Module):
                     + self.lambda_coord * xy_loss + self.lambda_coord * wh_loss \
                     + class_loss
         
-        # 세부 Loss 정보를 담은 딕셔너리 생성
         loss_dict = {
             'loss_xy': (self.lambda_coord * xy_loss).item() / batch_size,
             'loss_wh': (self.lambda_coord * wh_loss).item() / batch_size,
