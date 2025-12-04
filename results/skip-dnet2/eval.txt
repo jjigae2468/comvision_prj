@@ -1,0 +1,63 @@
+Saved Best Model at Epoch 39 (Val Loss: 13.7263)
+
+     epoch      loss       gpu
+     40/50      12.8     20.3G: 100%|█████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 120/120 [01:03<00:00,  1.88it/s]
+
+[FULL EVAL] Evaluating mAP for Epoch 40...
+                                                                                                                                                                                                                                                    
+Inference Speed: 26.98 ms/img | FPS: 37.06
+
+--- Evaluation @ IoU 0.5 ---
+Evaluating with IoU Threshold 0.5
+CLASS                     AP
+aeroplane                 0.00
+bicycle                   0.00
+bird                      0.00
+boat                      0.00
+bottle                    0.00
+bus                       0.00
+car                       0.00
+cat                       0.00
+chair                     0.00
+cow                       0.00
+diningtable               0.00
+dog                       0.00
+horse                     0.00
+motorbike                 0.00
+person                    0.00
+pottedplant               0.00 (No Preds)
+sheep                     0.00
+sofa                      0.00
+train                     0.00
+tvmonitor                 0.00
+
+--- Evaluation @ IoU 0.75 ---
+Evaluating with IoU Threshold 0.75
+CLASS                     AP
+aeroplane                 0.00
+bicycle                   0.00
+bird                      0.00
+boat                      0.00
+bottle                    0.00
+bus                       0.00
+car                       0.00
+cat                       0.00
+chair                     0.00
+cow                       0.00
+diningtable               0.00
+dog                       0.00
+horse                     0.00
+motorbike                 0.00
+person                    0.00
+pottedplant               0.00 (No Preds)
+sheep                     0.00
+sofa                      0.00
+train                     0.00
+tvmonitor                 0.00
+
+Final mAP@0.5: 0.00
+Final mAP@0.75: 0.00
+
+Epoch [40/50] Train Loss: 12.8030, Val Loss: 13.7600, Val mAP: 0.0000
+   Details -> XY: 4.8935 | WH: 1.7786 | Obj: 2.1545 | NoObj: 2.1562 | Class: 1.8203
+ETA: 0:42:31 (Elapsed: 1:27:20)

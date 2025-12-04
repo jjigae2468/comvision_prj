@@ -141,7 +141,8 @@ class ResNet(nn.Module):
 
         # [수정] 마지막 Conv 입력 채널 변경
         # DetNet 출력(512) + Skip 출력(256) = 768 채널
-        self.conv_end = nn.Conv2d(768, 30, kernel_size=3, stride=1, padding=1, bias=False)
+        # *** 중요: BN을 제거했으므로 bias=True로 설정하여 편향 학습을 가능하게 함 ***
+        self.conv_end = nn.Conv2d(768, 30, kernel_size=3, stride=1, padding=1, bias=True)
         
         # [삭제] 마지막 BN은 회귀 문제(좌표 예측)를 방해하므로 제거
         # self.bn_end = nn.BatchNorm2d(30) 
@@ -204,7 +205,7 @@ class ResNet(nn.Module):
         # 결과: (Batch, 768, 14, 14)
         x = torch.cat((x, skip), 1)
 
-        # 최종 예측 (BN 제거됨)
+        # 최종 예측 (BN 제거됨, Conv에는 Bias 포함됨)
         x = self.conv_end(x)
         # x = self.bn_end(x) # 사용 안 함
         
