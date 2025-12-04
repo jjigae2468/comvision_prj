@@ -10,7 +10,7 @@ class Dataset(data.Dataset):
     image_size = 448
 
     def __init__(self, root, file_names, train, transform):
-        print('DATA INITIALIZATION')
+        print('DATA INITIALIZATION (Full Option: Mosaic + Mixup + Smoothing)')
         
         self.root_images = os.path.join(root, 'Images')
         self.root_labels = os.path.join(root, 'Labels')
@@ -21,17 +21,15 @@ class Dataset(data.Dataset):
         self.labels = []
         self.mean = (123, 117, 104)  # RGB
         
-        # [제어 스위치] Main에서 Mosaic를 끄고 킬 수 있도록 변수 추가
+        # 제어 스위치
         self.enable_mosaic = True 
+        self.enable_mixup = True
 
         for line in file_names:
             line = line.rstrip()
             txt_path = f"{self.root_labels}/{line}.txt"
+            if not os.path.exists(txt_path): continue
             
-            # 라벨 파일이 없으면 건너뛰기 (안전장치)
-            if not os.path.exists(txt_path):
-                continue
-                
             with open(txt_path) as f:
                 objects = f.readlines()
                 self.f_names.append(line + '.jpg')
@@ -45,15 +43,24 @@ class Dataset(data.Dataset):
                 self.labels.append(torch.LongTensor(label))
         self.num_samples = len(self.boxes)
 
+    def __len__(self):
+        return self.num_samples
+
     def __getitem__(self, idx):
-        if self.train and self.enable_mosaic:
-            if random.random() < 0.5:
+        if self.train:
+            # 확률적으로 Mixup, Mosaic, 일반 로드 선택
+            prob = random.random()
+            
+            if self.enable_mixup and prob < 0.15:
+                img, boxes, labels = self.mixup(idx)
+            elif self.enable_mosaic and prob < (0.15 + 0.5): # 약 42.5% 확률로 Mosaic
                 img, boxes, labels = self.mosaic(idx)
             else:
                 img, boxes, labels = self.load_image_target(idx)
         else:
             img, boxes, labels = self.load_image_target(idx)
 
+        # 공통 Augmentation
         if self.train:
             img, boxes = self.random_flip(img, boxes)
             img, boxes = self.randomScale(img, boxes)
@@ -68,6 +75,7 @@ class Dataset(data.Dataset):
         boxes /= torch.Tensor([w, h, w, h]).expand_as(boxes)
         img = self.subMean(img, self.mean)
         img = cv2.resize(img, (self.image_size, self.image_size))
+        
         target = self.encoder(boxes, labels)
 
         for t in self.transform:
@@ -75,47 +83,67 @@ class Dataset(data.Dataset):
 
         return img, target
 
-    # [중요] 이 함수가 빠져서 에러가 났던 것임!
-    def __len__(self):
-        return self.num_samples
-
     def load_image_target(self, idx):
         img_path = os.path.join(self.root_images, self.f_names[idx])
         img = cv2.imread(img_path)
-        
-        # 이미지 로드 실패 시 예외처리
         if img is None:
-            print(f"Warning: Cannot load image {img_path}")
-            # 대체 이미지를 찾거나 에러를 발생시켜야 함. 
-            # 여기서는 간단히 0번 인덱스로 대체 (재귀 조심)
             if idx != 0: return self.load_image_target(0)
             else: raise FileNotFoundError(f"Image not found: {img_path}")
-            
         img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         boxes = self.boxes[idx].clone()
         labels = self.labels[idx].clone()
+        return img, boxes, labels
+
+    # [수정됨] Mixup Augmentation
+    def mixup(self, idx):
+        idx2 = random.randint(0, self.num_samples - 1)
+        
+        # 1. 두 이미지 로드
+        img1, box1, label1 = self.load_image_target(idx)
+        img2, box2, label2 = self.load_image_target(idx2)
+        
+        # 2. [핵심 수정] 리사이즈 전에 원본 크기 저장 (여기서 에러 났었음)
+        h1, w1, _ = img1.shape
+        h2, w2, _ = img2.shape
+        
+        # 3. 448x448로 리사이즈
+        img1 = cv2.resize(img1, (448, 448))
+        img2 = cv2.resize(img2, (448, 448))
+        
+        # 4. 이미지 믹스 (Beta 분포)
+        lam = np.random.beta(1.5, 1.5)
+        img = lam * img1 + (1 - lam) * img2
+        img = img.astype(np.uint8) 
+        
+        # 5. 박스 좌표 스케일링 (원본 크기 -> 448 크기)
+        # box1 좌표 변환
+        box1[:, [0, 2]] *= (448 / w1)
+        box1[:, [1, 3]] *= (448 / h1)
+
+        # box2 좌표 변환
+        box2[:, [0, 2]] *= (448 / w2)
+        box2[:, [1, 3]] *= (448 / h2)
+        
+        # 6. 박스와 라벨 합치기
+        boxes = torch.cat((box1, box2), 0)
+        labels = torch.cat((label1, label2), 0)
+        
         return img, boxes, labels
 
     def mosaic(self, idx):
         min_offset_x = 0.3
         min_offset_y = 0.3
         w, h = 448, 448 
-        
         idxs = [idx] + [random.randint(0, self.num_samples - 1) for _ in range(3)]
-        
         cx = int(w * min_offset_x + random.random() * (w * (1 - 2 * min_offset_x)))
         cy = int(h * min_offset_y + random.random() * (h * (1 - 2 * min_offset_y)))
-
         bgr = np.zeros((h, w, 3), np.float32)
         bgr[:, :, :] = self.mean 
-
         boxes_list = []
         labels_list = []
-
         for i, index in enumerate(idxs):
             img, box, label = self.load_image_target(index)
             h_img, w_img, _ = img.shape
-
             if i == 0:
                 x1a, y1a, x2a, y2a = max(cx - w_img, 0), max(cy - h_img, 0), cx, cy
                 x1b, y1b, x2b, y2b = w_img - (x2a - x1a), h_img - (y2a - y1a), w_img, h_img
@@ -128,49 +156,35 @@ class Dataset(data.Dataset):
             elif i == 3:
                 x1a, y1a, x2a, y2a = cx, cy, min(cx + w_img, w), min(cy + h_img, h)
                 x1b, y1b, x2b, y2b = 0, 0, min(w_img, x2a - x1a), min(h_img, y2a - y1a)
-
             bgr[y1a:y2a, x1a:x2a] = img[y1b:y2b, x1b:x2b]
-            
             pad_w = x1a - x1b
             pad_h = y1a - y1b
-
             box_new = box.clone()
             box_new[:, 0] += pad_w
             box_new[:, 1] += pad_h
             box_new[:, 2] += pad_w
             box_new[:, 3] += pad_h
-
             boxes_list.append(box_new)
             labels_list.append(label)
-
-        if len(boxes_list) == 0:
-             return self.load_image_target(idx)
-
+        if len(boxes_list) == 0: return self.load_image_target(idx)
         boxes = torch.cat(boxes_list, 0)
         labels = torch.cat(labels_list, 0)
-
         boxes[:, 0] = boxes[:, 0].clamp_(min=0, max=w)
         boxes[:, 1] = boxes[:, 1].clamp_(min=0, max=h)
         boxes[:, 2] = boxes[:, 2].clamp_(min=0, max=w)
         boxes[:, 3] = boxes[:, 3].clamp_(min=0, max=h)
-
         box_w = boxes[:, 2] - boxes[:, 0]
         box_h = boxes[:, 3] - boxes[:, 1]
         valid_mask = (box_w > 10) & (box_h > 10)
-
         boxes = boxes[valid_mask]
         labels = labels[valid_mask]
-
-        if len(boxes) == 0:
-             return self.load_image_target(idx)
-
+        if len(boxes) == 0: return self.load_image_target(idx)
         return bgr, boxes, labels
 
     def subMean(self, bgr, mean):
         mean = np.array(mean, dtype=np.float32)
         bgr = bgr - mean
         return bgr
-
     def random_flip(self, im, boxes):
         if random.random() < 0.5:
             im_lr = np.fliplr(im).copy()
@@ -181,7 +195,6 @@ class Dataset(data.Dataset):
             boxes[:, 2] = xmax
             return im_lr, boxes
         return im, boxes
-
     def randomScale(self, bgr, boxes):
         if random.random() < 0.5:
             scale = random.uniform(0.8, 1.2)
@@ -191,12 +204,10 @@ class Dataset(data.Dataset):
             boxes = boxes * scale_tensor
             return bgr, boxes
         return bgr, boxes
-
     def randomBlur(self, bgr):
         if random.random() < 0.5:
             bgr = cv2.blur(bgr, (5, 5))
         return bgr
-
     def RandomBrightness(self, bgr):
         if random.random() < 0.5:
             hsv = self.BGR2HSV(bgr)
@@ -207,7 +218,6 @@ class Dataset(data.Dataset):
             hsv = cv2.merge((h, s, v))
             bgr = self.HSV2BGR(hsv)
         return bgr
-
     def RandomHue(self, bgr):
         if random.random() < 0.5:
             hsv = self.BGR2HSV(bgr)
@@ -218,7 +228,6 @@ class Dataset(data.Dataset):
             hsv = cv2.merge((h, s, v))
             bgr = self.HSV2BGR(hsv)
         return bgr
-
     def RandomSaturation(self, bgr):
         if random.random() < 0.5:
             hsv = self.BGR2HSV(bgr)
@@ -229,13 +238,10 @@ class Dataset(data.Dataset):
             hsv = cv2.merge((h, s, v))
             bgr = self.HSV2BGR(hsv)
         return bgr
-
     def BGR2HSV(self, img):
         return cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-
     def HSV2BGR(self, img):
         return cv2.cvtColor(img, cv2.COLOR_HSV2BGR)
-
     def randomShift(self, bgr, boxes, labels):
         center = (boxes[:, 2:] + boxes[:, :2]) / 2
         if random.random() < 0.5:
@@ -266,7 +272,6 @@ class Dataset(data.Dataset):
             labels_in = labels[mask.view(-1)]
             return after_shfit_image, boxes_in, labels_in
         return bgr, boxes, labels
-
     def randomCrop(self, bgr, boxes, labels):
         if random.random() < 0.5:
             center = (boxes[:, 2:] + boxes[:, :2]) / 2
@@ -296,16 +301,26 @@ class Dataset(data.Dataset):
 
     def encoder(self, boxes, labels):
         grid_num = 14
+        num_classes = 20
         target = torch.zeros((grid_num, grid_num, 30))
         cell_size = 1. / grid_num
         wh = boxes[:, 2:] - boxes[:, :2]
         cxcy = (boxes[:, 2:] + boxes[:, :2]) / 2
+        
+        # Label Smoothing
+        smooth_eps = 0.1
+        
         for i in range(cxcy.size()[0]):
             cxcy_sample = cxcy[i]
             ij = (cxcy_sample / cell_size).ceil() - 1
+            
             target[int(ij[1]), int(ij[0]), 4] = 1
             target[int(ij[1]), int(ij[0]), 9] = 1
-            target[int(ij[1]), int(ij[0]), int(labels[i]) + 9] = 1
+            
+            target[int(ij[1]), int(ij[0]), 10:] = smooth_eps / num_classes
+            class_idx = int(labels[i]) + 9 
+            target[int(ij[1]), int(ij[0]), class_idx] += (1.0 - smooth_eps)
+            
             xy = ij * cell_size
             delta_xy = (cxcy_sample - xy) / cell_size
             target[int(ij[1]), int(ij[0]), 2:4] = wh[i]
