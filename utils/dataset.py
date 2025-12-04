@@ -44,7 +44,7 @@ class Dataset(data.Dataset):
         # [수정] 50% 확률로 Mosaic Augmentation 적용
         if self.train and random.random() < 0.5:
             img, boxes, labels = self.load_mosaic(idx)
-            # Mosaic를 썼을 때는 이미 기하학적 변형이 심하므로 RandomCrop/Shift 등은 건너뛰고 색상 변형만 줌
+            # Mosaic 적용 시에는 기하학적 변형(Shift/Scale 등)은 생략하고 색상 노이즈만 추가
             img = self.randomBlur(img)
             img = self.RandomBrightness(img)
             img = self.RandomHue(img)
@@ -84,13 +84,14 @@ class Dataset(data.Dataset):
     def __len__(self):
         return self.num_samples
 
-    # [추가] Mosaic Augmentation 구현
+    # [수정됨] Mosaic Augmentation 구현 (에러 수정 완료)
     def load_mosaic(self, index):
         labels4 = []
         s = self.image_size
         
-        # 중심점 랜덤 설정
-        yc, xc = [int(random.uniform(-x, 2 * s + x)) for x in [-s // 2]]
+        # [수정] 중심점(cut) 랜덤 설정 (이전 코드 에러 원인 수정)
+        yc = int(random.uniform(s * 0.5, s * 1.5))
+        xc = int(random.uniform(s * 0.5, s * 1.5))
         
         # 4장의 이미지 인덱스 선택
         indices = [index] + [random.randint(0, self.num_samples - 1) for _ in range(3)]

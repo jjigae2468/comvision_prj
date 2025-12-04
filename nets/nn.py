@@ -7,7 +7,6 @@ import torch.nn.functional as F
 resnet50_url = 'https://download.pytorch.org/models/resnet50-19c8e357.pth',
 
 # [추가] SE-Block (Squeeze-and-Excitation) 정의
-# 채널 간의 중요도를 학습해서 성능을 높이는 Attention 모듈
 class SELayer(nn.Module):
     def __init__(self, channel, reduction=16):
         super(SELayer, self).__init__()
@@ -118,7 +117,7 @@ class DetNet(nn.Module):
         self.conv3 = nn.Conv2d(planes, self.expansion * planes, kernel_size=1, bias=False)
         self.bn3 = nn.BatchNorm2d(self.expansion * planes)
         
-        # [추가] DetNet 블록 마지막에 SE-Block 장착!
+        # [추가] DetNet 블록 마지막에 SE-Block 장착
         self.se = SELayer(self.expansion * planes)
 
         self.downsample = nn.Sequential()
@@ -133,7 +132,7 @@ class DetNet(nn.Module):
         out = F.relu(self.bn2(self.conv2(out)))
         out = self.bn3(self.conv3(out))
         
-        # [적용] Attention: 중요한 채널은 살리고 나머지는 억제
+        # [적용] Attention
         out = self.se(out)
 
         out += self.downsample(x)
@@ -157,7 +156,7 @@ class ResNet(nn.Module):
         self.layer3 = self._make_layer(block, 256, layers[2], stride=2)
         self.layer4 = self._make_layer(block, 512, layers[3], stride=2)
         
-        # [유지] DetNet 채널은 256으로 유지 (SE-Block이 성능 보완)
+        # [유지] DetNet 채널은 256으로 유지
         self.layer5 = self._make_detnet_layer(in_channels=2048)
         
         # [추가] Skip Connection을 위한 1x1 Conv (1024 -> 256)
@@ -167,7 +166,7 @@ class ResNet(nn.Module):
         # DetNet(256) + Skip(256) = 512 채널
         self.conv_end = nn.Conv2d(512, 30, kernel_size=3, stride=1, padding=1, bias=False)
         
-        # [유지] 마지막 BN 활성화 (학습 안정성을 위해)
+        # [유지] 마지막 BN 활성화
         self.bn_end = nn.BatchNorm2d(30) 
 
         for m in self.modules():
@@ -194,7 +193,6 @@ class ResNet(nn.Module):
         return nn.Sequential(*layers)
 
     def _make_detnet_layer(self, in_channels):
-        # planes=256 고정 (기존 DetNet 구조 유지)
         layers = [
             DetNet(in_planes=in_channels, planes=256, block_type='B'),
             DetNet(in_planes=256, planes=256, block_type='A'),
@@ -215,16 +213,16 @@ class ResNet(nn.Module):
         x3 = self.layer3(x) 
         
         x = self.layer4(x3)
-        x = self.layer5(x) # DetNet 통과 (여기서 SE-Block 동작함)
+        x = self.layer5(x) # DetNet 통과 (SE-Block 동작)
 
         # [처리] Skip Connection
         skip = self.skip_layer(x3)       # 1024 -> 256
         skip = F.avg_pool2d(skip, 2, stride=2) # 28x28 -> 14x14
         
-        # [결합] (Batch, 256+256, 14, 14)
+        # [결합]
         x = torch.cat((x, skip), 1)
 
-        # [최종 예측] BN 적용됨
+        # [최종 예측]
         x = self.conv_end(x)
         x = self.bn_end(x)
         
@@ -234,15 +232,8 @@ class ResNet(nn.Module):
         return x
 
 
-# resnet50
 def resnet50(pretrained=False, **kwargs):
     model_ = ResNet(Bottleneck, [3, 4, 6, 3], **kwargs)
     if pretrained:
         model_.load_state_dict(model_zoo.load_url('https://download.pytorch.org/models/resnet50-19c8e357.pth'))
     return model_
-
-
-if __name__ == '__main__':
-    a = torch.randn((2, 3, 448, 448))
-    model = resnet50()
-    print(model(a).shape)
